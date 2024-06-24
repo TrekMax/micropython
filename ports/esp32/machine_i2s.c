@@ -121,7 +121,9 @@ typedef struct _machine_i2s_obj_t {
     i2s_port_t port;
     mp_hal_pin_obj_t sck;
     mp_hal_pin_obj_t ws;
-    mp_hal_pin_obj_t sd;
+    mp_hal_pin_obj_t dout;
+    mp_hal_pin_obj_t din;
+    mp_hal_pin_obj_t mck;
     int8_t mode;
     i2s_bits_per_sample_t bits;
     format_t format;
@@ -203,24 +205,10 @@ STATIC int8_t get_frame_mapping_index(i2s_bits_per_sample_t bits, format_t forma
     }
 }
 
-STATIC i2s_bits_per_sample_t get_dma_bits(uint8_t mode, i2s_bits_per_sample_t bits) {
-    if (mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
-        return bits;
-    } else { // Master Rx
-        // read 32 bit samples for I2S hardware.  e.g. MEMS microphones
-        return I2S_BITS_PER_SAMPLE_32BIT;
-    }
-}
-
 STATIC i2s_channel_fmt_t get_dma_format(uint8_t mode, format_t format) {
-    if (mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
-        if (format == MONO) {
-            return I2S_CHANNEL_FMT_ONLY_LEFT;
-        } else {  // STEREO
-            return I2S_CHANNEL_FMT_RIGHT_LEFT;
-        }
-    } else { // Master Rx
-        // read stereo frames for all I2S hardware
+    if (format == MONO) {
+        return I2S_CHANNEL_FMT_ONLY_LEFT;
+    } else {  // STEREO
         return I2S_CHANNEL_FMT_RIGHT_LEFT;
     }
 }
@@ -228,7 +216,7 @@ STATIC i2s_channel_fmt_t get_dma_format(uint8_t mode, format_t format) {
 STATIC uint32_t get_dma_buf_count(uint8_t mode, i2s_bits_per_sample_t bits, format_t format, int32_t ibuf) {
     // calculate how many DMA buffers need to be allocated
     uint32_t dma_frame_size_in_bytes =
-        (get_dma_bits(mode, bits) / 8) * (get_dma_format(mode, format) == I2S_CHANNEL_FMT_RIGHT_LEFT ? 2: 1);
+        (bits / 8) * (get_dma_format(mode, format) == I2S_CHANNEL_FMT_RIGHT_LEFT ? 2: 1);
 
     uint32_t dma_buf_count = ibuf / (DMA_BUF_LEN_IN_I2S_FRAMES * dma_frame_size_in_bytes);
 
@@ -365,7 +353,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     enum {
         ARG_sck,
         ARG_ws,
-        ARG_sd,
+        ARG_dout,
+        ARG_din,
+        ARG_mck,
         ARG_mode,
         ARG_bits,
         ARG_format,
@@ -376,7 +366,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_sck,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_ws,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
-        { MP_QSTR_sd,       MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_dout,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_din,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
+        { MP_QSTR_mck,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ,   {.u_obj = MP_OBJ_NULL} },
         { MP_QSTR_mode,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_bits,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
         { MP_QSTR_format,   MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = -1} },
@@ -392,14 +384,17 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     //
 
     // are Pins valid?
-    int8_t sck = args[ARG_sck].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_sck].u_obj);
-    int8_t ws = args[ARG_ws].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_ws].u_obj);
-    int8_t sd = args[ARG_sd].u_obj == MP_OBJ_NULL ? -1 : machine_pin_get_id(args[ARG_sd].u_obj);
+    int8_t sck = args[ARG_sck].u_obj == MP_OBJ_NULL ? I2S_PIN_NO_CHANGE : machine_pin_get_id(args[ARG_sck].u_obj);
+    int8_t ws = args[ARG_ws].u_obj == MP_OBJ_NULL ? I2S_PIN_NO_CHANGE : machine_pin_get_id(args[ARG_ws].u_obj);
+    int8_t dout = args[ARG_dout].u_obj == MP_OBJ_NULL ? I2S_PIN_NO_CHANGE : machine_pin_get_id(args[ARG_dout].u_obj);
+    int8_t din = args[ARG_din].u_obj == MP_OBJ_NULL ? I2S_PIN_NO_CHANGE : machine_pin_get_id(args[ARG_din].u_obj);
+    int8_t mck = args[ARG_mck].u_obj == MP_OBJ_NULL ? I2S_PIN_NO_CHANGE : machine_pin_get_id(args[ARG_mck].u_obj);
 
     // is Mode valid?
     i2s_mode_t mode = args[ARG_mode].u_int;
     if ((mode != (I2S_MODE_MASTER | I2S_MODE_RX)) &&
-        (mode != (I2S_MODE_MASTER | I2S_MODE_TX))) {
+        (mode != (I2S_MODE_MASTER | I2S_MODE_TX)) &&
+        (mode != (I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX))) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid mode"));
     }
 
@@ -425,7 +420,9 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
 
     self->sck = sck;
     self->ws = ws;
-    self->sd = sd;
+    self->dout = dout;
+    self->din = din;
+    self->mck = mck;
     self->mode = mode;
     self->bits = bits;
     self->format = format;
@@ -440,13 +437,13 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     i2s_config_t i2s_config;
     i2s_config.communication_format = I2S_COMM_FORMAT_I2S;
     i2s_config.mode = mode;
-    i2s_config.bits_per_sample = get_dma_bits(mode, bits);
+    i2s_config.bits_per_sample = bits;
     i2s_config.channel_format = get_dma_format(mode, format);
     i2s_config.sample_rate = self->rate;
     i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LOWMED;
     i2s_config.dma_buf_count = get_dma_buf_count(mode, bits, format, self->ibuf);
     i2s_config.dma_buf_len = DMA_BUF_LEN_IN_I2S_FRAMES;
-    i2s_config.use_apll = false;
+    i2s_config.use_apll = true;
     i2s_config.tx_desc_auto_clear = true;
     i2s_config.fixed_mclk = 0;
     i2s_config.mclk_multiple = I2S_MCLK_MULTIPLE_256;
@@ -467,16 +464,21 @@ STATIC void machine_i2s_init_helper(machine_i2s_obj_t *self, size_t n_pos_args, 
     #endif
 
     i2s_pin_config_t pin_config;
-    pin_config.mck_io_num = I2S_PIN_NO_CHANGE;
     pin_config.bck_io_num = self->sck;
     pin_config.ws_io_num = self->ws;
 
     if (mode == (I2S_MODE_MASTER | I2S_MODE_RX)) {
-        pin_config.data_in_num = self->sd;
+        pin_config.mck_io_num = I2S_PIN_NO_CHANGE;
+        pin_config.data_in_num = self->din;
         pin_config.data_out_num = I2S_PIN_NO_CHANGE;
-    } else { // TX
+    } else if(mode == (I2S_MODE_MASTER | I2S_MODE_TX)){ 
+        pin_config.mck_io_num = I2S_PIN_NO_CHANGE;
         pin_config.data_in_num = I2S_PIN_NO_CHANGE;
-        pin_config.data_out_num = self->sd;
+        pin_config.data_out_num = self->dout;
+    }else { 
+        pin_config.mck_io_num = self->mck;
+        pin_config.data_in_num = self->din;
+        pin_config.data_out_num = self->dout;
     }
 
     check_esp_err(i2s_set_pin(self->port, &pin_config));
@@ -487,14 +489,18 @@ STATIC void machine_i2s_print(const mp_print_t *print, mp_obj_t self_in, mp_prin
     mp_printf(print, "I2S(id=%u,\n"
         "sck="MP_HAL_PIN_FMT ",\n"
         "ws="MP_HAL_PIN_FMT ",\n"
-        "sd="MP_HAL_PIN_FMT ",\n"
+        "dout="MP_HAL_PIN_FMT ",\n"
+        "din="MP_HAL_PIN_FMT ",\n"
+        "mck="MP_HAL_PIN_FMT ",\n"
         "mode=%u,\n"
         "bits=%u, format=%u,\n"
         "rate=%d, ibuf=%d)",
         self->port,
         mp_hal_pin_name(self->sck),
         mp_hal_pin_name(self->ws),
-        mp_hal_pin_name(self->sd),
+        mp_hal_pin_name(self->dout),
+        mp_hal_pin_name(self->din),
+        mp_hal_pin_name(self->mck),
         self->mode,
         self->bits, self->format,
         self->rate, self->ibuf
@@ -675,6 +681,7 @@ STATIC const mp_rom_map_elem_t machine_i2s_locals_dict_table[] = {
     // Constants
     { MP_ROM_QSTR(MP_QSTR_RX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_RX) },
     { MP_ROM_QSTR(MP_QSTR_TX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_TX) },
+    { MP_ROM_QSTR(MP_QSTR_RTX),              MP_ROM_INT(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX) },
     { MP_ROM_QSTR(MP_QSTR_STEREO),          MP_ROM_INT(STEREO) },
     { MP_ROM_QSTR(MP_QSTR_MONO),            MP_ROM_INT(MONO) },
 };
@@ -683,7 +690,7 @@ MP_DEFINE_CONST_DICT(machine_i2s_locals_dict, machine_i2s_locals_dict_table);
 STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint_t size, int *errcode) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-    if (self->mode != (I2S_MODE_MASTER | I2S_MODE_RX)) {
+    if (self->mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
         *errcode = MP_EPERM;
         return MP_STREAM_ERROR;
     }
@@ -719,7 +726,7 @@ STATIC mp_uint_t machine_i2s_stream_read(mp_obj_t self_in, void *buf_in, mp_uint
 STATIC mp_uint_t machine_i2s_stream_write(mp_obj_t self_in, const void *buf_in, mp_uint_t size, int *errcode) {
     machine_i2s_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-    if (self->mode != (I2S_MODE_MASTER | I2S_MODE_TX)) {
+    if (self->mode == (I2S_MODE_MASTER | I2S_MODE_RX)) {
         *errcode = MP_EPERM;
         return MP_STREAM_ERROR;
     }
@@ -756,7 +763,7 @@ STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, uintptr_
         ret = 0;
 
         if (flags & MP_STREAM_POLL_RD) {
-            if (self->mode != (I2S_MODE_MASTER | I2S_MODE_RX)) {
+            if (self->mode == (I2S_MODE_MASTER | I2S_MODE_TX)) {
                 *errcode = MP_EPERM;
                 return MP_STREAM_ERROR;
             }
@@ -776,7 +783,7 @@ STATIC mp_uint_t machine_i2s_ioctl(mp_obj_t self_in, mp_uint_t request, uintptr_
         }
 
         if (flags & MP_STREAM_POLL_WR) {
-            if (self->mode != (I2S_MODE_MASTER | I2S_MODE_TX)) {
+            if (self->mode == (I2S_MODE_MASTER | I2S_MODE_RX)) {
                 *errcode = MP_EPERM;
                 return MP_STREAM_ERROR;
             }
