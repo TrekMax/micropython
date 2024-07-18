@@ -152,6 +152,7 @@ idf_component_register(
         ${MICROPY_PORT_DIR}
         ${MICROPY_BOARD_DIR}
         ${CMAKE_BINARY_DIR}
+        ${MICROPY_DIR}/../components/esp-sr/esp-tts/esp_tts_chinese/include
     LDFRAGMENTS
         linker.lf
     REQUIRES
